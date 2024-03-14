@@ -1,76 +1,77 @@
 <script lang="ts">
-  import {onDestroy, onMount} from "svelte";
-  import * as socketio from "socket.io-client";
-  import {floatplaneState, wdbSocketState} from "$lib/stores.ts";
+	import { onDestroy, onMount } from 'svelte';
+	import * as socketio from 'socket.io-client';
+	import { floatplaneState, wdbSocketState } from '$lib/stores.ts';
 
-  import type { WanDb_FloatplaneData } from "$lib/wdb_types.ts";
+	import type { WanDb_FloatplaneData } from '$lib/wdb_types.ts';
 
-  // This is the message format that the WDB websocket sends to the client
-  interface WdbMessage {
-    live: boolean,
-    wan?: boolean,
-    isWAN?: boolean,
-    title: string,
-    description: string,
-    thumbnail: string,
-    imminence: 0 | 1 | 2 | 3 | 4,
-    textImminence: "Distant" | "Today" | "Soon" | "Imminent" | "Live"
-  }
+	// Interface sent by the WDB websocket on connection
+	interface WdbConnectState {
+		version: string;
+		features: number;
+		state: WdbMessage;
+	}
 
-  let socket: socketio.Socket | undefined
-  onMount(() => {
-    socket = socketio.connect('wss://mq.thewandb.com', {transports: ['websocket']});
-    socket.on('connect', () => {
-      console.debug("[whenplane] Connected to WDB")
-      if (!socket) return;
-      socket.emit('message', JSON.stringify({
-        type: 2,
-        payload: 'live'
-      }));
-      // socket.emit(, 'status');
-    });
+	// This is the message format that the WDB websocket sends to the client
+	interface WdbMessage {
+		live: boolean;
+		isWAN: boolean;
+		isAfterparty: boolean;
+		title: string;
+		description: string;
+		thumbnail: {
+			url: string;
+			width: number;
+			height: number;
+			childImages: any[];
+		};
+		imminence: 0 | 1 | 2 | 3 | 4;
+		sponsors: any[];
+	}
 
-    socket.on('state', (message: string) => {
-      const body = JSON.parse(message) as WdbMessage;
-      body.isWAN = body.wan;
-      delete body.wan;
-      floatplaneState.set(body as WanDb_FloatplaneData);
+	let socket: socketio.Socket | undefined;
 
-      wdbSocketState.update(value => {
-        value.lastReceive = Date.now();
-        return value;
-      });
-    });
+	onMount(() => {
+		socket = socketio.connect('wss://mq.thewandb.com', { transports: ['websocket'] });
+		socket.on('connect', () => {
+			console.debug('[wdb] Connected to WDB');
+		});
 
-    // stomp.connect({
-    //     host: 'prod_whenplane_com',
-    //     login: 'whenplane',
-    //     passcode: 'cWDK2KUpPCw3AW'
-    // }, () => {
-    //
-    //   stomp?.subscribe('/exchange/status', (message) => {
-    //     try {
-    //       const body = JSON.parse(message.body) as WdbMessage;
-    //       body.isWAN = body.wan;
-    //       delete body.wan;
-    //       floatplaneState.set(body as WanDb_FloatplaneData);
-    //
-    //       wdbSocketState.update(value => {
-    //         value.lastReceive = Date.now();
-    //         return value;
-    //       });
-    //       message.ack()
-    //     } catch (e) {
-    //       message.nack();
-    //     }
-    //   }, { 'ack': 'client' });
-    // })
-  })
+		// Handle the connection message (which includes initial state)
+		socket.on('state_sync', (data: WdbConnectState) => {
+			console.debug('[wdb] Received State Sync message');
+			console.debug('[wdb] Using WDB Protocol Version: ' + data.version);
+			console.debug('[wdb] WDB Features: ' + data.features);
+			floatplaneState.set(data.state as unknown as WanDb_FloatplaneData);
+			if (!socket) return console.error('[wdb] Socket is undefined - unable to proceeed');
+			socket.emit(
+				'join',
+				JSON.stringify({
+					id: 'live'
+				})
+			);
+		});
 
-  onDestroy(() => {
-    if (socket) {
-      socket.disconnect();
-      socket = undefined;
-    }
-  })
+		// Handle the live state updates (revised for protocol 0.1.2)
+		socket.on('live', (message: string) => {
+			const body = JSON.parse(message) as WdbMessage;
+			floatplaneState.set(body as unknown as WanDb_FloatplaneData);
+
+			wdbSocketState.update((value) => {
+				value.lastReceive = Date.now();
+				return value;
+			});
+		});
+
+		socket.on('disconnect', (code: number) => {
+			console.debug('[wdb] Disconnected from WDB (with code: ' + code + ')');
+		});
+	});
+
+	onDestroy(() => {
+		if (socket) {
+			socket.disconnect();
+			socket = undefined;
+		}
+	});
 </script>
